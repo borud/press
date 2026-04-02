@@ -1,0 +1,10 @@
+BasedOnStyle: Google
+ColumnLimit: 120
+AlignAfterOpenBracket: DontAlign
+BinPackArguments: false
+
+AlignConsecutiveDeclarations: true
+AlignConsecutiveAssignments: true
+AlignTrailingComments: true
+PointerAlignment: Left
+DerivePointerAlignment: false

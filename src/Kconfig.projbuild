@@ -1,0 +1,10 @@
+menu "Press Configuration"
+
+    config PRESS_PROV_POP
+        string "BLE provisioning proof of possession"
+        default "press1234"
+        help
+            The proof-of-possession string used during BLE WiFi provisioning.
+            The user must enter this in the provisioning app to pair with the device.
+
+endmenu

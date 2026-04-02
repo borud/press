@@ -1,0 +1,8 @@
+{
+  "editor.inlayHints.enabled": "off",
+  "clangd.arguments": [
+    "--background-index",
+    "--compile-commands-dir=${workspaceFolder}",
+    "--query-driver=${workspaceFolder}/.platformio/packages/toolchain-xtensa-esp-elf/bin/xtensa-esp32-elf-gcc"
+  ]
+}

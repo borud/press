@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Press Controller</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <h1>Press Controller</h1>
+
+    <section id="activity-display">
+        <div class="activity-text" id="activity">idle</div>
+    </section>
+
+    <section id="controls">
+        <h2>Controls</h2>
+        <div class="btn-row">
+            <button id="btn-move-rev" class="ctrl-btn move rev">|&#9664;</button>
+            <button id="btn-jog-rev" class="ctrl-btn jog rev">&#9664;</button>
+            <button id="btn-stop" class="ctrl-btn stop">STOP</button>
+            <button id="btn-jog-fwd" class="ctrl-btn jog fwd">&#9654;</button>
+            <button id="btn-move-fwd" class="ctrl-btn move fwd">&#9654;|</button>
+        </div>
+        <div class="distance-row">
+            <label>Move distance:
+                <input type="number" id="move-distance" min="0.1" max="1000" step="0.1">
+                <span>cm</span>
+            </label>
+        </div>
+    </section>
+
+    <section id="params">
+        <h2>Motor Parameters</h2>
+        <div class="param-group">
+            <label>Max Speed (Hz):
+                <input type="range" id="max-speed" min="100" max="10000" step="100">
+                <span id="max-speed-val"></span>
+            </label>
+            <label>Start Speed (Hz):
+                <input type="range" id="start-speed" min="10" max="1000" step="10">
+                <span id="start-speed-val"></span>
+            </label>
+            <label>Accel Steps:
+                <input type="range" id="accel-steps" min="10" max="2000" step="10">
+                <span id="accel-steps-val"></span>
+            </label>
+            <label>Microsteps:
+                <select id="microsteps">
+                    <option value="1">1 (full)</option>
+                    <option value="2">1/2</option>
+                    <option value="4">1/4</option>
+                    <option value="8">1/8</option>
+                    <option value="16">1/16</option>
+                    <option value="32">1/32</option>
+                </select>
+            </label>
+            <button id="btn-save-params">Save Parameters</button>
+        </div>
+    </section>
+
+    <section id="system">
+        <h2>System</h2>
+        <div class="param-group">
+            <label>Log Level:
+                <select id="log-level">
+                    <option value="0">None</option>
+                    <option value="1">Error</option>
+                    <option value="2">Warn</option>
+                    <option value="3">Info</option>
+                    <option value="4">Debug</option>
+                    <option value="5">Verbose</option>
+                </select>
+            </label>
+        </div>
+        <div class="info-grid">
+            <span class="label">Host:</span><span id="hostname">--</span>
+            <span class="label">WiFi:</span><span id="wifi">--</span>
+            <span class="label">Heap:</span><span id="heap">--</span>
+            <span class="label">Firmware:</span><span id="fw-version">--</span>
+        </div>
+    </section>
+
+    <script src="/app.js"></script>
+</body>
+</html>

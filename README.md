@@ -77,3 +77,5 @@ REST endpoints:
     POST /api/config       update speed, accel, etc
     POST /api/move         jog/move commands
     GET  /api/firmware     build date and IDF version
+
+Note that none of the endpoints have any form of authentication.

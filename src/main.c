@@ -21,6 +21,11 @@ static void on_wifi_connected(void) {
   }
 }
 
+static void on_wifi_disconnected(void) {
+  ESP_LOGW(TAG, "WiFi disconnected, stopping web server");
+  webserver_stop();
+}
+
 void app_main(void) {
   ESP_LOGI(TAG, "Press stepper controller starting");
 
@@ -88,8 +93,9 @@ void app_main(void) {
 
   esp_task_wdt_reset();
 
-  // Start web server when WiFi connects (now or later)
+  // Start web server when WiFi connects, stop on disconnect
   wifi_on_connected(on_wifi_connected);
+  wifi_on_disconnected(on_wifi_disconnected);
 
   ESP_LOGI(TAG, "ready");
 

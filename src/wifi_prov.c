@@ -24,7 +24,8 @@ static struct {
   char                ip_str[16];
   bool                connected;
   int                 retry_count;
-  wifi_connected_cb_t on_connected_cb;
+  wifi_connected_cb_t    on_connected_cb;
+  wifi_disconnected_cb_t on_disconnected_cb;
 } s_wifi;
 
 #define MAX_RETRY_BACKOFF 30  // Max 30s between retries
@@ -68,6 +69,9 @@ static void event_handler(void* arg, esp_event_base_t event_base, int32_t event_
       case WIFI_EVENT_STA_DISCONNECTED:
         s_wifi.connected = false;
         xEventGroupClearBits(s_wifi.event_group, WIFI_CONNECTED_BIT);
+        if (s_wifi.on_disconnected_cb) {
+          s_wifi.on_disconnected_cb();
+        }
         ESP_LOGW(TAG, "WiFi disconnected, retrying (attempt %d)...", s_wifi.retry_count + 1);
         int delay_s = (1 << s_wifi.retry_count);
         if (delay_s > MAX_RETRY_BACKOFF) {
@@ -105,6 +109,8 @@ static void get_device_service_name(char* service_name, size_t max) {
 }
 
 static esp_err_t init_mdns(void) {
+  mdns_free();
+
   esp_err_t ret = mdns_init();
   if (ret != ESP_OK) {
     ESP_LOGE(TAG, "mdns_init failed: %s", esp_err_to_name(ret));
@@ -205,5 +211,10 @@ esp_err_t wifi_on_connected(wifi_connected_cb_t cb) {
   if (s_wifi.connected && cb) {
     cb();
   }
+  return ESP_OK;
+}
+
+esp_err_t wifi_on_disconnected(wifi_disconnected_cb_t cb) {
+  s_wifi.on_disconnected_cb = cb;
   return ESP_OK;
 }

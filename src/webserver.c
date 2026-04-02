@@ -333,6 +333,11 @@ static esp_err_t init_littlefs(void)
 
 esp_err_t webserver_init(void)
 {
+    if (s_server) {
+        ESP_LOGI(TAG, "web server already running, skipping init");
+        return ESP_OK;
+    }
+
     esp_err_t ret = init_littlefs();
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "LittleFS mount failed, static files won't be served");

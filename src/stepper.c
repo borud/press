@@ -22,11 +22,11 @@ static struct {
   stepper_motion_params_t  motion_params;
   volatile stepper_state_t state;
   volatile bool            enabled;
-  volatile bool            stop_requested;
   volatile bool            profiled_move;  // true = fixed-step move with accel/decel
   volatile uint32_t        uniform_steps;  // steps for uniform phase in profiled move
   stepper_move_done_cb_t   move_done_cb;
   SemaphoreHandle_t        done_sem;
+  SemaphoreHandle_t        api_mutex;  // serializes public API calls across tasks
   TaskHandle_t             state_task;
 } s_stepper;
 
@@ -80,10 +80,6 @@ static void handle_profiled_move_completion(void) {
 static void handle_state_transition(void) {
   switch (s_stepper.state) {
     case STEPPER_STATE_ACCELERATING:
-      if (s_stepper.stop_requested) {
-        start_transmission(s_stepper.decel_encoder, STEPPER_STATE_DECELERATING);
-        return;
-      }
       if (s_stepper.profiled_move && s_stepper.uniform_steps == 0) {
         start_transmission(s_stepper.decel_encoder, STEPPER_STATE_DECELERATING);
         return;
@@ -184,9 +180,8 @@ static void delete_encoders(void) {
 esp_err_t stepper_init(const stepper_config_t* config) {
   ESP_RETURN_ON_FALSE(config, ESP_ERR_INVALID_ARG, TAG, "config is NULL");
 
-  s_stepper.config         = *config;
-  s_stepper.state          = STEPPER_STATE_IDLE;
-  s_stepper.stop_requested = false;
+  s_stepper.config = *config;
+  s_stepper.state  = STEPPER_STATE_IDLE;
 
   // Default motion parameters
   s_stepper.motion_params.max_speed_hz   = 800;
@@ -195,6 +190,9 @@ esp_err_t stepper_init(const stepper_config_t* config) {
 
   s_stepper.done_sem = xSemaphoreCreateBinary();
   ESP_RETURN_ON_FALSE(s_stepper.done_sem, ESP_ERR_NO_MEM, TAG, "failed to create semaphore");
+
+  s_stepper.api_mutex = xSemaphoreCreateMutex();
+  ESP_RETURN_ON_FALSE(s_stepper.api_mutex, ESP_ERR_NO_MEM, TAG, "failed to create API mutex");
 
   // Configure DIR pin
   gpio_config_t dir_conf = {
@@ -298,8 +296,11 @@ esp_err_t stepper_set_motion_params(const stepper_motion_params_t* params) {
       (unsigned long)params->start_speed_hz);
   ESP_RETURN_ON_FALSE(params->accel_steps > 0, ESP_ERR_INVALID_ARG, TAG, "accel_steps must be > 0");
 
+  xSemaphoreTake(s_stepper.api_mutex, portMAX_DELAY);
+
   if (s_stepper.state != STEPPER_STATE_IDLE) {
     ESP_LOGW(TAG, "cannot change motion params while running");
+    xSemaphoreGive(s_stepper.api_mutex);
     return ESP_ERR_INVALID_STATE;
   }
 
@@ -307,24 +308,32 @@ esp_err_t stepper_set_motion_params(const stepper_motion_params_t* params) {
 
   // Recreate encoders with new params
   delete_encoders();
-  ESP_RETURN_ON_ERROR(create_encoders(), TAG, "failed to recreate encoders");
+  esp_err_t ret = create_encoders();
+  if (ret != ESP_OK) {
+    ESP_LOGE(TAG, "failed to recreate encoders: %s", esp_err_to_name(ret));
+    xSemaphoreGive(s_stepper.api_mutex);
+    return ret;
+  }
 
   ESP_LOGI(TAG,
       "motion params updated: start=%luHz max=%luHz accel_steps=%lu",
       (unsigned long)params->start_speed_hz,
       (unsigned long)params->max_speed_hz,
       (unsigned long)params->accel_steps);
+  xSemaphoreGive(s_stepper.api_mutex);
   return ESP_OK;
 }
 
 const stepper_motion_params_t* stepper_get_motion_params(void) { return &s_stepper.motion_params; }
 
-esp_err_t stepper_run_steps(uint32_t steps, uint32_t speed_hz) {
+esp_err_t stepper_run_steps(uint32_t steps) {
   ESP_RETURN_ON_FALSE(steps > 0, ESP_ERR_INVALID_ARG, TAG, "steps must be > 0");
-  ESP_RETURN_ON_FALSE(speed_hz > 0, ESP_ERR_INVALID_ARG, TAG, "speed must be > 0");
+
+  xSemaphoreTake(s_stepper.api_mutex, portMAX_DELAY);
 
   if (s_stepper.state != STEPPER_STATE_IDLE) {
     ESP_LOGW(TAG, "stepper not idle, ignoring run_steps");
+    xSemaphoreGive(s_stepper.api_mutex);
     return ESP_ERR_INVALID_STATE;
   }
 
@@ -336,19 +345,27 @@ esp_err_t stepper_run_steps(uint32_t steps, uint32_t speed_hz) {
   uint32_t              dummy     = 0;
 
   s_stepper.state = STEPPER_STATE_RUNNING;
-  ESP_RETURN_ON_ERROR(rmt_transmit(s_stepper.rmt_channel, s_stepper.uniform_encoder, &dummy, sizeof(dummy), &tx_config),
-      TAG,
-      "failed to start RMT transmission");
+  esp_err_t ret = rmt_transmit(s_stepper.rmt_channel, s_stepper.uniform_encoder, &dummy, sizeof(dummy), &tx_config);
+  if (ret != ESP_OK) {
+    s_stepper.state = STEPPER_STATE_IDLE;
+    ESP_LOGE(TAG, "failed to start RMT transmission: %s", esp_err_to_name(ret));
+    xSemaphoreGive(s_stepper.api_mutex);
+    return ret;
+  }
 
-  ESP_LOGI(TAG, "running %lu steps at %luHz", (unsigned long)steps, (unsigned long)speed_hz);
+  ESP_LOGI(TAG, "running %lu steps at %luHz", (unsigned long)steps, (unsigned long)s_stepper.motion_params.max_speed_hz);
+  xSemaphoreGive(s_stepper.api_mutex);
   return ESP_OK;
 }
 
 esp_err_t stepper_run_profiled(uint32_t steps) {
   ESP_RETURN_ON_FALSE(steps > 0, ESP_ERR_INVALID_ARG, TAG, "steps must be > 0");
 
+  xSemaphoreTake(s_stepper.api_mutex, portMAX_DELAY);
+
   if (s_stepper.state != STEPPER_STATE_IDLE) {
     ESP_LOGW(TAG, "stepper not idle, ignoring run_profiled");
+    xSemaphoreGive(s_stepper.api_mutex);
     return ESP_ERR_INVALID_STATE;
   }
 
@@ -376,9 +393,12 @@ esp_err_t stepper_run_profiled(uint32_t steps) {
         .pulse_ticks    = s_stepper.config.pulse_ticks,
         .reverse        = false,
     };
-    ESP_RETURN_ON_ERROR(rmt_new_stepper_scurve_encoder(&accel_cfg, &s_stepper.accel_encoder),
-        TAG,
-        "failed to create shortened accel encoder");
+    esp_err_t ret = rmt_new_stepper_scurve_encoder(&accel_cfg, &s_stepper.accel_encoder);
+    if (ret != ESP_OK) {
+      ESP_LOGE(TAG, "failed to create shortened accel encoder: %s", esp_err_to_name(ret));
+      xSemaphoreGive(s_stepper.api_mutex);
+      return ret;
+    }
 
     stepper_scurve_encoder_config_t decel_cfg = {
         .resolution_hz  = s_stepper.config.resolution_hz,
@@ -388,14 +408,16 @@ esp_err_t stepper_run_profiled(uint32_t steps) {
         .pulse_ticks    = s_stepper.config.pulse_ticks,
         .reverse        = true,
     };
-    ESP_RETURN_ON_ERROR(rmt_new_stepper_scurve_encoder(&decel_cfg, &s_stepper.decel_encoder),
-        TAG,
-        "failed to create shortened decel encoder");
+    ret = rmt_new_stepper_scurve_encoder(&decel_cfg, &s_stepper.decel_encoder);
+    if (ret != ESP_OK) {
+      ESP_LOGE(TAG, "failed to create shortened decel encoder: %s", esp_err_to_name(ret));
+      xSemaphoreGive(s_stepper.api_mutex);
+      return ret;
+    }
   }
 
-  s_stepper.profiled_move  = true;
-  s_stepper.uniform_steps  = uniform_steps;
-  s_stepper.stop_requested = false;
+  s_stepper.profiled_move = true;
+  s_stepper.uniform_steps = uniform_steps;
 
   // Start with acceleration phase
   rmt_encoder_reset(s_stepper.accel_encoder);
@@ -403,9 +425,13 @@ esp_err_t stepper_run_profiled(uint32_t steps) {
   uint32_t              dummy     = 0;
 
   s_stepper.state = STEPPER_STATE_ACCELERATING;
-  ESP_RETURN_ON_ERROR(rmt_transmit(s_stepper.rmt_channel, s_stepper.accel_encoder, &dummy, sizeof(dummy), &tx_config),
-      TAG,
-      "failed to start profiled move");
+  esp_err_t ret = rmt_transmit(s_stepper.rmt_channel, s_stepper.accel_encoder, &dummy, sizeof(dummy), &tx_config);
+  if (ret != ESP_OK) {
+    s_stepper.state = STEPPER_STATE_IDLE;
+    ESP_LOGE(TAG, "failed to start profiled move: %s", esp_err_to_name(ret));
+    xSemaphoreGive(s_stepper.api_mutex);
+    return ret;
+  }
 
   ESP_LOGI(TAG,
       "profiled move: %lu steps (accel=%lu uniform=%lu decel=%lu)",
@@ -413,19 +439,20 @@ esp_err_t stepper_run_profiled(uint32_t steps) {
       (unsigned long)accel_steps,
       (unsigned long)uniform_steps,
       (unsigned long)decel_steps);
+  xSemaphoreGive(s_stepper.api_mutex);
   return ESP_OK;
 }
 
-esp_err_t stepper_run_continuous(uint32_t speed_hz) {
-  ESP_RETURN_ON_FALSE(speed_hz > 0, ESP_ERR_INVALID_ARG, TAG, "speed must be > 0");
+esp_err_t stepper_run_continuous(void) {
+  xSemaphoreTake(s_stepper.api_mutex, portMAX_DELAY);
 
   if (s_stepper.state != STEPPER_STATE_IDLE) {
     ESP_LOGW(TAG, "stepper not idle, ignoring run_continuous");
+    xSemaphoreGive(s_stepper.api_mutex);
     return ESP_ERR_INVALID_STATE;
   }
 
-  s_stepper.stop_requested = false;
-  s_stepper.profiled_move  = false;
+  s_stepper.profiled_move = false;
 
   // Start with acceleration phase
   rmt_encoder_reset(s_stepper.accel_encoder);
@@ -434,36 +461,28 @@ esp_err_t stepper_run_continuous(uint32_t speed_hz) {
   uint32_t              dummy     = 0;
 
   s_stepper.state = STEPPER_STATE_ACCELERATING;
-  ESP_RETURN_ON_ERROR(rmt_transmit(s_stepper.rmt_channel, s_stepper.accel_encoder, &dummy, sizeof(dummy), &tx_config),
-      TAG,
-      "failed to start acceleration");
+  esp_err_t ret = rmt_transmit(s_stepper.rmt_channel, s_stepper.accel_encoder, &dummy, sizeof(dummy), &tx_config);
+  if (ret != ESP_OK) {
+    s_stepper.state = STEPPER_STATE_IDLE;
+    ESP_LOGE(TAG, "failed to start acceleration: %s", esp_err_to_name(ret));
+    xSemaphoreGive(s_stepper.api_mutex);
+    return ret;
+  }
 
   ESP_LOGI(
       TAG, "starting continuous run with S-curve accel to %luHz", (unsigned long)s_stepper.motion_params.max_speed_hz);
+  xSemaphoreGive(s_stepper.api_mutex);
   return ESP_OK;
 }
 
-esp_err_t stepper_ramp_stop(void) {
-  if (s_stepper.state == STEPPER_STATE_IDLE) {
-    return ESP_OK;
-  }
-
-  if (s_stepper.state == STEPPER_STATE_DECELERATING) {
-    ESP_LOGD(TAG, "already decelerating");
-    return ESP_OK;
-  }
-
-  if (s_stepper.state == STEPPER_STATE_ACCELERATING) {
-    // Signal the state task to decel after accel completes
-    s_stepper.stop_requested = true;
-    ESP_LOGI(TAG, "ramp stop requested during acceleration");
-    return ESP_OK;
-  }
-
-  // Currently in RUNNING state - stop uniform and start decel
-  // First, abort the current transmission
+// Abort current RMT transmission and start deceleration.
+// Caller must hold api_mutex.
+static esp_err_t abort_and_decelerate(void) {
   ESP_RETURN_ON_ERROR(rmt_disable(s_stepper.rmt_channel), TAG, "failed to disable RMT");
   ESP_RETURN_ON_ERROR(rmt_enable(s_stepper.rmt_channel), TAG, "failed to re-enable RMT");
+
+  // Drain any semaphore given by the aborted transmission's ISR
+  xSemaphoreTake(s_stepper.done_sem, 0);
 
   s_stepper.state = STEPPER_STATE_DECELERATING;
   rmt_encoder_reset(s_stepper.decel_encoder);
@@ -478,16 +497,51 @@ esp_err_t stepper_ramp_stop(void) {
   return ESP_OK;
 }
 
-esp_err_t stepper_stop(void) {
+esp_err_t stepper_ramp_stop(void) {
+  xSemaphoreTake(s_stepper.api_mutex, portMAX_DELAY);
+
   if (s_stepper.state == STEPPER_STATE_IDLE) {
+    xSemaphoreGive(s_stepper.api_mutex);
     return ESP_OK;
   }
 
-  ESP_RETURN_ON_ERROR(rmt_disable(s_stepper.rmt_channel), TAG, "failed to disable RMT");
-  ESP_RETURN_ON_ERROR(rmt_enable(s_stepper.rmt_channel), TAG, "failed to re-enable RMT");
-  s_stepper.state          = STEPPER_STATE_IDLE;
-  s_stepper.stop_requested = false;
+  if (s_stepper.state == STEPPER_STATE_DECELERATING) {
+    ESP_LOGD(TAG, "already decelerating");
+    xSemaphoreGive(s_stepper.api_mutex);
+    return ESP_OK;
+  }
+
+  // Both ACCELERATING and RUNNING: abort current transmission, start decel
+  esp_err_t ret = abort_and_decelerate();
+  xSemaphoreGive(s_stepper.api_mutex);
+  return ret;
+}
+
+esp_err_t stepper_stop(void) {
+  xSemaphoreTake(s_stepper.api_mutex, portMAX_DELAY);
+
+  if (s_stepper.state == STEPPER_STATE_IDLE) {
+    xSemaphoreGive(s_stepper.api_mutex);
+    return ESP_OK;
+  }
+
+  esp_err_t ret = rmt_disable(s_stepper.rmt_channel);
+  if (ret != ESP_OK) {
+    ESP_LOGE(TAG, "failed to disable RMT: %s", esp_err_to_name(ret));
+    xSemaphoreGive(s_stepper.api_mutex);
+    return ret;
+  }
+  ret = rmt_enable(s_stepper.rmt_channel);
+  if (ret != ESP_OK) {
+    ESP_LOGE(TAG, "failed to re-enable RMT: %s", esp_err_to_name(ret));
+    xSemaphoreGive(s_stepper.api_mutex);
+    return ret;
+  }
+  // Drain any semaphore given by the aborted transmission's ISR
+  xSemaphoreTake(s_stepper.done_sem, 0);
+  s_stepper.state = STEPPER_STATE_IDLE;
   ESP_LOGI(TAG, "stepper stopped (immediate)");
+  xSemaphoreGive(s_stepper.api_mutex);
   return ESP_OK;
 }
 

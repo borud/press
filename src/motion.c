@@ -13,6 +13,7 @@
 static const char *TAG = "motion";
 
 #define JOG_WATCHDOG_TIMEOUT_US  500000  // 500ms
+#define BTN_KEEPALIVE_INTERVAL_US 200000 // 200ms — well within watchdog window
 
 typedef enum {
     ACTIVITY_IDLE = 0,
@@ -25,6 +26,8 @@ typedef enum {
 static struct {
     volatile activity_t activity;
     esp_timer_handle_t jog_watchdog;
+    esp_timer_handle_t btn_keepalive_timer;
+    bool button_jog;
 } s_motion;
 
 // Called from stepper state task when a profiled move completes
@@ -33,6 +36,13 @@ static void on_move_done(void)
     s_motion.activity = ACTIVITY_IDLE;
     webserver_broadcast_status();
     ESP_LOGI(TAG, "move complete");
+}
+
+// Periodic keepalive for physical button jogs
+static void btn_keepalive_cb(void *arg)
+{
+    (void)arg;
+    motion_jog_keepalive();
 }
 
 // Jog watchdog: auto-stop if no keepalive received within timeout
@@ -76,6 +86,16 @@ esp_err_t motion_init(void)
         return ret;
     }
 
+    esp_timer_create_args_t keepalive_args = {
+        .callback = btn_keepalive_cb,
+        .name = "btn_keepalive",
+    };
+    ret = esp_timer_create(&keepalive_args, &s_motion.btn_keepalive_timer);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "failed to create button keepalive timer: %s", esp_err_to_name(ret));
+        return ret;
+    }
+
     ESP_LOGI(TAG, "motion initialized");
     return ESP_OK;
 }
@@ -93,19 +113,13 @@ const char *motion_get_activity(void)
 
 esp_err_t motion_jog_start(button_state_t dir)
 {
-    if (stepper_is_running()) {
-        ESP_LOGW(TAG, "jog: stepper busy");
+    if (!stepper_is_enabled()) {
+        ESP_LOGW(TAG, "jog: stepper not armed");
         return ESP_ERR_INVALID_STATE;
     }
 
     stepper_dir_t sdir = (dir == BTN_FWD) ? STEPPER_DIR_FORWARD : STEPPER_DIR_REVERSE;
     s_motion.activity = (dir == BTN_FWD) ? ACTIVITY_JOG_FWD : ACTIVITY_JOG_REV;
-
-    if (!stepper_is_enabled()) {
-        ESP_LOGW(TAG, "jog: stepper not armed");
-        s_motion.activity = ACTIVITY_IDLE;
-        return ESP_ERR_INVALID_STATE;
-    }
 
     esp_err_t ret = stepper_set_direction(sdir);
     if (ret != ESP_OK) {
@@ -114,7 +128,7 @@ esp_err_t motion_jog_start(button_state_t dir)
         return ret;
     }
 
-    ret = stepper_run_continuous(config_get()->max_speed_hz);
+    ret = stepper_run_continuous();
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "jog: failed to start: %s", esp_err_to_name(ret));
         s_motion.activity = ACTIVITY_IDLE;
@@ -152,19 +166,13 @@ esp_err_t motion_move_steps(int32_t steps)
         return ESP_OK;
     }
 
-    if (stepper_is_running()) {
-        ESP_LOGW(TAG, "move: stepper busy");
+    if (!stepper_is_enabled()) {
+        ESP_LOGW(TAG, "move: stepper not armed");
         return ESP_ERR_INVALID_STATE;
     }
 
     stepper_dir_t dir = (steps > 0) ? STEPPER_DIR_FORWARD : STEPPER_DIR_REVERSE;
     s_motion.activity = (steps > 0) ? ACTIVITY_MOVE_FWD : ACTIVITY_MOVE_REV;
-
-    if (!stepper_is_enabled()) {
-        ESP_LOGW(TAG, "move: stepper not armed");
-        s_motion.activity = ACTIVITY_IDLE;
-        return ESP_ERR_INVALID_STATE;
-    }
 
     esp_err_t ret = stepper_set_direction(dir);
     if (ret != ESP_OK) {
@@ -207,13 +215,20 @@ void motion_on_button_press(button_state_t btn)
         return;
     }
     if (btn == BTN_FWD || btn == BTN_REV) {
-        motion_jog_start(btn);
+        esp_err_t ret = motion_jog_start(btn);
+        if (ret != ESP_OK) {
+            return;
+        }
+        s_motion.button_jog = true;
+        esp_timer_start_periodic(s_motion.btn_keepalive_timer, BTN_KEEPALIVE_INTERVAL_US);
     }
 }
 
 void motion_on_button_release(button_state_t btn)
 {
     if (s_motion.activity == ACTIVITY_JOG_FWD || s_motion.activity == ACTIVITY_JOG_REV) {
+        esp_timer_stop(s_motion.btn_keepalive_timer);
+        s_motion.button_jog = false;
         motion_jog_stop();
     }
 }

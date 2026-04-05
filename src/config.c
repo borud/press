@@ -141,23 +141,24 @@ press_config_t *config_lock(void)
 
 void config_unlock(void) { xSemaphoreGive(s_config.mutex); }
 
-uint32_t config_cm_to_steps(float cm)
+// Compute motor steps per centimeter based on gear ratio and microstepping.
+// gear_ratio = stepper_teeth / roller_teeth
+// distance_per_rev = PI * roller_diameter_mm * gear_ratio (in mm)
+// steps_per_cm = (steps_per_rev * microsteps) / (distance_per_rev / 10.0)
+static float calc_steps_per_cm(void)
 {
-    // gear_ratio = stepper_teeth / roller_teeth
-    // distance_per_rev = PI * roller_diameter_mm * gear_ratio (in mm)
-    // steps_per_cm = (steps_per_rev * microsteps) / (distance_per_rev / 10.0)
     float gear_ratio = (float)STEPPER_TEETH / (float)ROLLER_TEETH;
     float dist_per_rev_mm = (float)M_PI * ROLLER_DIAMETER_MM * gear_ratio;
     float dist_per_rev_cm = dist_per_rev_mm / 10.0f;
-    float steps_per_cm = (float)(STEPS_PER_REV * s_config.cfg.microsteps) / dist_per_rev_cm;
-    return (uint32_t)(cm * steps_per_cm + 0.5f);
+    return (float)(STEPS_PER_REV * s_config.cfg.microsteps) / dist_per_rev_cm;
+}
+
+uint32_t config_cm_to_steps(float cm)
+{
+    return (uint32_t)(cm * calc_steps_per_cm() + 0.5f);
 }
 
 float config_steps_to_cm(uint32_t steps)
 {
-    float gear_ratio = (float)STEPPER_TEETH / (float)ROLLER_TEETH;
-    float dist_per_rev_mm = (float)M_PI * ROLLER_DIAMETER_MM * gear_ratio;
-    float dist_per_rev_cm = dist_per_rev_mm / 10.0f;
-    float steps_per_cm = (float)(STEPS_PER_REV * s_config.cfg.microsteps) / dist_per_rev_cm;
-    return (float)steps / steps_per_cm;
+    return (float)steps / calc_steps_per_cm();
 }

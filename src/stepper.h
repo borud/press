@@ -62,9 +62,9 @@ esp_err_t stepper_set_motion_params(const stepper_motion_params_t *params);
 const stepper_motion_params_t *stepper_get_motion_params(void);
 
 /**
- * Run a specific number of steps at the given frequency (no acceleration).
+ * Run a specific number of steps at the configured max speed (no acceleration).
  */
-esp_err_t stepper_run_steps(uint32_t steps, uint32_t speed_hz);
+esp_err_t stepper_run_steps(uint32_t steps);
 
 /**
  * Run a specific number of steps with S-curve acceleration and deceleration.
@@ -75,9 +75,10 @@ esp_err_t stepper_run_profiled(uint32_t steps);
 
 /**
  * Start continuous stepping with S-curve acceleration.
- * Motor accelerates to max_speed and runs until stepper_ramp_stop() or stepper_stop().
+ * Motor accelerates to the configured max speed and runs until
+ * stepper_ramp_stop() or stepper_stop().
  */
-esp_err_t stepper_run_continuous(uint32_t speed_hz);
+esp_err_t stepper_run_continuous(void);
 
 /**
  * Decelerate to stop using S-curve profile.

@@ -15,8 +15,8 @@ typedef void (*button_callback_t)(button_state_t state);
  * Initialize button input with debounced polling.
  * Buttons use external pull-ups and are active LOW.
  *
- * @param on_press  Called when a button is pressed (from timer ISR context)
- * @param on_release Called when a button is released (from timer ISR context)
+ * @param on_press  Called when a button is pressed (from esp_timer task context)
+ * @param on_release Called when a button is released (from esp_timer task context)
  */
 esp_err_t buttons_init(button_callback_t on_press, button_callback_t on_release);
 

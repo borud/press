@@ -28,6 +28,12 @@ esp_err_t motion_jog_start(button_state_t dir);
 esp_err_t motion_jog_stop(void);
 
 /**
+ * Reset the jog watchdog timer. Must be called periodically during a jog
+ * to prevent the 500ms safety timeout from stopping the motor.
+ */
+esp_err_t motion_jog_keepalive(void);
+
+/**
  * Move a fixed number of steps with S-curve profile (non-blocking).
  * Positive = forward, negative = reverse.
  */

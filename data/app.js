@@ -13,11 +13,27 @@
     }
 
     function post(url, body) {
+        if (body) body.t = Date.now();
         return fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: body ? JSON.stringify(body) : ''
         });
+    }
+
+    // Move command with abort timeout — prevents queued requests from
+    // causing delayed motion.  Stop commands use plain post() instead
+    // so they never self-cancel.
+    function postMove(action) {
+        var ctrl = new AbortController();
+        var timer = setTimeout(function() { ctrl.abort(); }, 800);
+        var body = { action: action, t: Date.now() };
+        return fetch('/api/move', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+            signal: ctrl.signal
+        }).finally(function() { clearTimeout(timer); });
     }
 
     // Activity display update (from SSE or poll fallback)
@@ -101,27 +117,55 @@
 
     // Fixed-distance move buttons — single click
     $('#btn-move-fwd').addEventListener('click', () => {
-        post('/api/move', { action: 'move-fwd' });
+        postMove('move-fwd');
     });
     $('#btn-move-rev').addEventListener('click', () => {
-        post('/api/move', { action: 'move-rev' });
+        postMove('move-rev');
     });
 
-    // Jog buttons — hold to move
-    function setupJog(btnId, action) {
-        const btn = $(btnId);
-        const start = () => post('/api/move', { action: action });
-        const stop = () => post('/api/move', { action: 'jog-stop' });
+    // Jog buttons — hold to move, release anywhere to stop.
+    // Sends keepalive pings every 200ms; firmware auto-stops after 500ms without one.
+    let jogActive = null;       // null or action string
+    let jogKeepaliveId = null;  // setInterval id
 
-        btn.addEventListener('mousedown', start);
-        btn.addEventListener('mouseup', stop);
-        btn.addEventListener('mouseleave', stop);
-        btn.addEventListener('touchstart', (e) => { e.preventDefault(); start(); });
-        btn.addEventListener('touchend', (e) => { e.preventDefault(); stop(); });
+    function jogStart(action) {
+        if (jogActive) return;
+        jogActive = action;
+        postMove(action);
+        jogKeepaliveId = setInterval(function() {
+            postMove('jog-keepalive');
+        }, 200);
+    }
+
+    function jogStop() {
+        if (!jogActive) return;
+        jogActive = null;
+        if (jogKeepaliveId !== null) {
+            clearInterval(jogKeepaliveId);
+            jogKeepaliveId = null;
+        }
+        post('/api/move', { action: 'jog-stop' })
+            .catch(function() {
+                post('/api/move', { action: 'jog-stop' });
+            });
+    }
+
+    function setupJog(btnId, action) {
+        var btn = $(btnId);
+        btn.addEventListener('mousedown', function() { jogStart(action); });
+        btn.addEventListener('touchstart', function(e) { e.preventDefault(); jogStart(action); });
     }
 
     setupJog('#btn-jog-fwd', 'jog-fwd');
     setupJog('#btn-jog-rev', 'jog-rev');
+
+    document.addEventListener('mouseup', jogStop);
+    document.addEventListener('touchend', jogStop);
+    document.addEventListener('touchcancel', jogStop);
+    window.addEventListener('blur', jogStop);
+    document.addEventListener('visibilitychange', function() {
+        if (document.hidden) jogStop();
+    });
 
     // ARM button — toggle motor enable
     $('#btn-arm').addEventListener('click', () => {

@@ -11,7 +11,7 @@ menu "Press Configuration"
 
         config PRESS_DEFAULT_MAX_SPEED_HZ
             int "Maximum speed (Hz)"
-            default 2000
+            default 800
             range 1 100000
             help
                 Default maximum stepper speed in pulses per second.
@@ -41,7 +41,7 @@ menu "Press Configuration"
 
         config PRESS_DEFAULT_MICROSTEPS
             int "Microstepping divisor"
-            default 1
+            default 8
             range 1 32
             help
                 Default microstepping divisor (1, 2, 4, 8, 16, or 32).

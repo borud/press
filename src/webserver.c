@@ -12,8 +12,11 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 
+#include "esp_timer.h"
+
 #include <stdio.h>
 #include <string.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 
 static const char *TAG = "webserver";
@@ -34,6 +37,11 @@ typedef struct {
 static sse_client_t s_sse_clients[SSE_MAX_CLIENTS];
 static int s_sse_count = 0;
 static SemaphoreHandle_t s_sse_mutex = NULL;
+
+// Clock offset tracking for stale command detection
+static int64_t s_clock_offset_us = 0;
+static bool    s_clock_offset_valid = false;
+#define STALE_THRESHOLD_US 1000000  // 1 second
 
 // Send a properly chunked SSE event to one client.
 // Returns ESP_OK on success, ESP_FAIL on error.
@@ -299,8 +307,42 @@ static esp_err_t api_move_handler(httpd_req_t *req)
         return send_error(req, 400, "missing 'action' field");
     }
 
-    esp_err_t ret = ESP_OK;
     const char *act = action->valuestring;
+
+    // Staleness check: reject queued move commands that are too old.
+    // Stop and jog-stop always execute immediately regardless of age.
+    cJSON *t_field = cJSON_GetObjectItem(json, "t");
+    if (t_field && cJSON_IsNumber(t_field)
+        && strcmp(act, "stop") != 0
+        && strcmp(act, "jog-stop") != 0) {
+
+        int64_t client_us = (int64_t)(t_field->valuedouble * 1000.0);
+        int64_t server_us = esp_timer_get_time();
+
+        if (!s_clock_offset_valid) {
+            s_clock_offset_us = client_us - server_us;
+            s_clock_offset_valid = true;
+            ESP_LOGI(TAG, "clock offset calibrated: %lld us", (long long)s_clock_offset_us);
+        }
+
+        int64_t age_us = server_us - (client_us - s_clock_offset_us);
+
+        // Recalibrate if age is wildly negative (ESP32 rebooted)
+        if (age_us < -5000000) {
+            s_clock_offset_us = client_us - server_us;
+            age_us = 0;
+            ESP_LOGW(TAG, "clock offset recalibrated (negative age detected)");
+        }
+
+        if (age_us > STALE_THRESHOLD_US) {
+            ESP_LOGW(TAG, "stale move command rejected: action=%s age=%lld ms",
+                     act, (long long)(age_us / 1000));
+            cJSON_Delete(json);
+            return send_error(req, 400, "stale command");
+        }
+    }
+
+    esp_err_t ret = ESP_OK;
 
     if (strcmp(act, "jog-fwd") == 0) {
         ret = motion_jog_start(BTN_FWD);
@@ -308,6 +350,8 @@ static esp_err_t api_move_handler(httpd_req_t *req)
         ret = motion_jog_start(BTN_REV);
     } else if (strcmp(act, "jog-stop") == 0) {
         ret = motion_jog_stop();
+    } else if (strcmp(act, "jog-keepalive") == 0) {
+        ret = motion_jog_keepalive();
     } else if (strcmp(act, "move-fwd") == 0) {
         float cm = config_get()->move_distance_cm;
         ret = motion_move_cm(cm);
@@ -393,6 +437,10 @@ static esp_err_t api_firmware_handler(httpd_req_t *req)
 static esp_err_t api_events_handler(httpd_req_t *req)
 {
     int fd = httpd_req_to_sockfd(req);
+
+    // Set a send timeout so dead SSE clients don't block the httpd thread
+    struct timeval tv = { .tv_sec = 2, .tv_usec = 0 };
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 
     // Check capacity before doing anything
     xSemaphoreTake(s_sse_mutex, portMAX_DELAY);

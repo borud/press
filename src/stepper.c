@@ -189,7 +189,7 @@ esp_err_t stepper_init(const stepper_config_t* config) {
   s_stepper.stop_requested = false;
 
   // Default motion parameters
-  s_stepper.motion_params.max_speed_hz   = 2000;
+  s_stepper.motion_params.max_speed_hz   = 800;
   s_stepper.motion_params.start_speed_hz = 100;
   s_stepper.motion_params.accel_steps    = 200;
 
@@ -491,7 +491,7 @@ esp_err_t stepper_stop(void) {
   return ESP_OK;
 }
 
-bool stepper_is_running(void) { return s_stepper.state != STEPPER_STATE_IDLE; }
+bool stepper_is_running(void) { return s_stepper.state != STEPPER_STATE_IDLE || s_stepper.profiled_move; }
 
 stepper_state_t stepper_get_state(void) { return s_stepper.state; }
 

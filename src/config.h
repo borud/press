@@ -5,7 +5,7 @@
 #include <stdint.h>
 
 // Mechanical constants
-#define STEPPER_TEETH      12
+#define STEPPER_TEETH      16
 #define ROLLER_TEETH       46
 #define ROLLER_DIAMETER_MM 65.2f
 #define STEPS_PER_REV      200  // Full steps per revolution (Nema 23)

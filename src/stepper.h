@@ -5,8 +5,8 @@
 #include <stdint.h>
 
 typedef enum {
-    STEPPER_DIR_FORWARD = 0,
-    STEPPER_DIR_REVERSE = 1,
+    STEPPER_DIR_FORWARD = 1,
+    STEPPER_DIR_REVERSE = 0,
 } stepper_dir_t;
 
 typedef enum {

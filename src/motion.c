@@ -12,7 +12,7 @@
 
 static const char *TAG = "motion";
 
-#define POSITION_UPDATE_INTERVAL_US  50000  // 50ms
+#define JOG_WATCHDOG_TIMEOUT_US  500000  // 500ms
 
 typedef enum {
     ACTIVITY_IDLE = 0,
@@ -24,8 +24,7 @@ typedef enum {
 
 static struct {
     volatile activity_t activity;
-    int64_t jog_start_time_us;
-    esp_timer_handle_t pos_timer;
+    esp_timer_handle_t jog_watchdog;
 } s_motion;
 
 // Called from stepper state task when a profiled move completes
@@ -36,10 +35,16 @@ static void on_move_done(void)
     ESP_LOGI(TAG, "move complete");
 }
 
-// Dummy position timer callback (kept for potential future use)
-static void position_update_cb(void *arg)
+// Jog watchdog: auto-stop if no keepalive received within timeout
+static void jog_watchdog_cb(void *arg)
 {
     (void)arg;
+    if (s_motion.activity == ACTIVITY_JOG_FWD || s_motion.activity == ACTIVITY_JOG_REV) {
+        ESP_LOGW(TAG, "jog watchdog expired, stopping motor");
+        s_motion.activity = ACTIVITY_IDLE;
+        stepper_ramp_stop();
+        webserver_broadcast_status();
+    }
 }
 
 esp_err_t motion_init(void)
@@ -62,12 +67,12 @@ esp_err_t motion_init(void)
     stepper_set_move_done_callback(on_move_done);
 
     esp_timer_create_args_t timer_args = {
-        .callback = position_update_cb,
-        .name = "pos_update",
+        .callback = jog_watchdog_cb,
+        .name = "jog_watchdog",
     };
-    ret = esp_timer_create(&timer_args, &s_motion.pos_timer);
+    ret = esp_timer_create(&timer_args, &s_motion.jog_watchdog);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "failed to create position timer: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "failed to create jog watchdog timer: %s", esp_err_to_name(ret));
         return ret;
     }
 
@@ -88,16 +93,9 @@ const char *motion_get_activity(void)
 
 esp_err_t motion_jog_start(button_state_t dir)
 {
-    // Wait for any ongoing deceleration to finish
-    int wait_ms = 0;
-    while (stepper_is_running() && wait_ms < 2000) {
-        vTaskDelay(pdMS_TO_TICKS(10));
-        wait_ms += 10;
-    }
     if (stepper_is_running()) {
-        ESP_LOGW(TAG, "jog: stepper still running after 2s, forcing stop");
-        stepper_stop();
-        vTaskDelay(pdMS_TO_TICKS(10));
+        ESP_LOGW(TAG, "jog: stepper busy");
+        return ESP_ERR_INVALID_STATE;
     }
 
     stepper_dir_t sdir = (dir == BTN_FWD) ? STEPPER_DIR_FORWARD : STEPPER_DIR_REVERSE;
@@ -123,15 +121,29 @@ esp_err_t motion_jog_start(button_state_t dir)
         return ret;
     }
 
+    esp_timer_start_once(s_motion.jog_watchdog, JOG_WATCHDOG_TIMEOUT_US);
+
     webserver_broadcast_status();
     return ESP_OK;
 }
 
 esp_err_t motion_jog_stop(void)
 {
+    esp_timer_stop(s_motion.jog_watchdog);
     s_motion.activity = ACTIVITY_IDLE;
+    esp_err_t ret = stepper_ramp_stop();
     webserver_broadcast_status();
-    return stepper_ramp_stop();
+    return ret;
+}
+
+esp_err_t motion_jog_keepalive(void)
+{
+    if (s_motion.activity != ACTIVITY_JOG_FWD && s_motion.activity != ACTIVITY_JOG_REV) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    esp_timer_stop(s_motion.jog_watchdog);
+    esp_timer_start_once(s_motion.jog_watchdog, JOG_WATCHDOG_TIMEOUT_US);
+    return ESP_OK;
 }
 
 esp_err_t motion_move_steps(int32_t steps)

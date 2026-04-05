@@ -231,3 +231,23 @@ select {
 
 .info-grid .label { color: #908c84; }
 .info-grid span:not(.label) { color: #585450; }
+
+/* Landscape blocker — only activates on small screens (phones) */
+.landscape-msg {
+    display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    background: #d4d8dc;
+    color: #222;
+    font-size: 1.2em;
+    font-weight: 500;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 2em;
+}
+
+@media (max-height: 500px) and (orientation: landscape) {
+    .landscape-msg { display: flex; }
+}

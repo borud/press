@@ -3,6 +3,7 @@
   "short_name": "Press",
   "start_url": "/",
   "display": "standalone",
+  "orientation": "portrait",
   "background_color": "#d4d8dc",
   "theme_color": "#d4d8dc"
 }

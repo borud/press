@@ -1,6 +1,11 @@
 (function() {
     'use strict';
 
+    // Lock to portrait if the browser supports it (Android standalone mode)
+    if (screen.orientation && screen.orientation.lock) {
+        screen.orientation.lock('portrait').catch(function() {});
+    }
+
     const $ = (sel) => document.querySelector(sel);
     let online = false;
     let stepsPerCm = 1;

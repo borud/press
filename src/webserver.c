@@ -227,6 +227,7 @@ static esp_err_t api_config_get_handler(httpd_req_t* req) {
   cJSON_AddNumberToObject(json, "move_distance_cm", cfg->move_distance_cm);
   cJSON_AddNumberToObject(json, "microsteps", cfg->microsteps);
   cJSON_AddNumberToObject(json, "log_level", cfg->log_level);
+  cJSON_AddNumberToObject(json, "steps_per_cm", config_get_steps_per_cm());
 
   esp_err_t ret = send_json_response(req, json);
   cJSON_Delete(json);

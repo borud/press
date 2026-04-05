@@ -60,3 +60,8 @@ uint32_t config_cm_to_steps(float cm);
  * Convert motor steps to centimeters.
  */
 float config_steps_to_cm(uint32_t steps);
+
+/**
+ * Get the current steps-per-cm value (depends on microstepping and gear ratio).
+ */
+float config_get_steps_per_cm(void);

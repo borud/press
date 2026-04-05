@@ -3,6 +3,11 @@
 
     const $ = (sel) => document.querySelector(sel);
     let online = false;
+    let stepsPerCm = 1;
+
+    function hzToCmSec(hz) {
+        return (hz / stepsPerCm).toFixed(1);
+    }
 
     function setOnline(state) {
         if (state === online) return;
@@ -91,10 +96,11 @@
         fetch('/api/config')
             .then(r => r.json())
             .then(c => {
+                if (c.steps_per_cm) stepsPerCm = c.steps_per_cm;
                 $('#max-speed').value = c.max_speed_hz;
-                $('#max-speed-val').textContent = c.max_speed_hz;
+                $('#max-speed-val').textContent = hzToCmSec(c.max_speed_hz);
                 $('#start-speed').value = c.start_speed_hz;
-                $('#start-speed-val').textContent = c.start_speed_hz;
+                $('#start-speed-val').textContent = hzToCmSec(c.start_speed_hz);
                 $('#accel-steps').value = c.accel_steps;
                 $('#accel-steps-val').textContent = c.accel_steps;
                 $('#move-distance').value = c.move_distance_cm;
@@ -110,7 +116,7 @@
         fetch('/api/firmware')
             .then(r => r.json())
             .then(f => {
-                $('#fw-version').textContent = 'v' + f.version;
+                $('#fw-version').textContent = f.version;
             })
             .catch(() => {});
     }
@@ -182,16 +188,21 @@
     ['max-speed', 'start-speed', 'accel-steps'].forEach(id => {
         const keyMap = { 'max-speed': 'max_speed_hz', 'start-speed': 'start_speed_hz', 'accel-steps': 'accel_steps' };
         $('#' + id).addEventListener('input', function() {
-            $('#' + id + '-val').textContent = this.value;
+            if (id === 'accel-steps') {
+                $('#' + id + '-val').textContent = this.value;
+            } else {
+                $('#' + id + '-val').textContent = hzToCmSec(this.value);
+            }
         });
         $('#' + id).addEventListener('change', function() {
             post('/api/config', { [keyMap[id]]: parseInt(this.value) });
         });
     });
 
-    // Microsteps — apply immediately
+    // Microsteps — apply immediately, then reload config to update steps_per_cm
     $('#microsteps').addEventListener('change', function() {
-        post('/api/config', { microsteps: parseInt(this.value) });
+        post('/api/config', { microsteps: parseInt(this.value) })
+            .then(function() { loadConfig(); });
     });
 
     // Move distance — apply immediately

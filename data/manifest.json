@@ -1,0 +1,8 @@
+{
+  "name": "Press Controller",
+  "short_name": "Press",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#d4d8dc",
+  "theme_color": "#d4d8dc"
+}

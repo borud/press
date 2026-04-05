@@ -162,3 +162,8 @@ float config_steps_to_cm(uint32_t steps)
 {
     return (float)steps / calc_steps_per_cm();
 }
+
+float config_get_steps_per_cm(void)
+{
+    return calc_steps_per_cm();
+}

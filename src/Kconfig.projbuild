@@ -7,4 +7,45 @@ menu "Press Configuration"
             The proof-of-possession string used during BLE WiFi provisioning.
             The user must enter this in the provisioning app to pair with the device.
 
+    menu "Motor Defaults"
+
+        config PRESS_DEFAULT_MAX_SPEED_HZ
+            int "Maximum speed (Hz)"
+            default 2000
+            range 1 100000
+            help
+                Default maximum stepper speed in pulses per second.
+
+        config PRESS_DEFAULT_START_SPEED_HZ
+            int "Start speed (Hz)"
+            default 100
+            range 1 100000
+            help
+                Default starting speed for acceleration ramp in pulses per second.
+                Must be less than maximum speed.
+
+        config PRESS_DEFAULT_ACCEL_STEPS
+            int "Acceleration steps"
+            default 200
+            range 1 10000
+            help
+                Default number of steps in the acceleration ramp.
+
+        config PRESS_DEFAULT_MOVE_DISTANCE_MM
+            int "Move distance (mm)"
+            default 100
+            range 1 10000
+            help
+                Default distance for fixed moves in millimeters.
+                Stored internally as centimeters (value / 10).
+
+        config PRESS_DEFAULT_MICROSTEPS
+            int "Microstepping divisor"
+            default 1
+            range 1 32
+            help
+                Default microstepping divisor (1, 2, 4, 8, 16, or 32).
+
+    endmenu
+
 endmenu

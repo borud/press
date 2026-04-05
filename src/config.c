@@ -29,12 +29,12 @@ static struct {
 
 static void set_defaults(press_config_t *cfg)
 {
-    cfg->max_speed_hz = 2000;
-    cfg->start_speed_hz = 100;
-    cfg->accel_steps = 200;
-    cfg->move_distance_cm = 10.0f;
-    cfg->microsteps = 1;
-    cfg->log_level = ESP_LOG_INFO;
+    cfg->max_speed_hz   = CONFIG_PRESS_DEFAULT_MAX_SPEED_HZ;
+    cfg->start_speed_hz = CONFIG_PRESS_DEFAULT_START_SPEED_HZ;
+    cfg->accel_steps    = CONFIG_PRESS_DEFAULT_ACCEL_STEPS;
+    cfg->move_distance_cm = CONFIG_PRESS_DEFAULT_MOVE_DISTANCE_MM / 10.0f;
+    cfg->microsteps     = CONFIG_PRESS_DEFAULT_MICROSTEPS;
+    cfg->log_level      = ESP_LOG_INFO;
 }
 
 esp_err_t config_init(void)

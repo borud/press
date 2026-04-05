@@ -17,6 +17,19 @@ h1 {
     letter-spacing: -0.02em;
 }
 
+/* Connection indicator */
+.conn-indicator {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    vertical-align: middle;
+    margin-left: 6px;
+}
+
+.conn-indicator.online { background: #4ade80; }
+.conn-indicator.offline { background: #f87171; }
+
 h2 {
     font-size: 0.8em;
     font-weight: 500;
@@ -99,6 +112,34 @@ button:active { background: #333; }
     font-size: 1.0em;
     flex: 0.8;
 }
+
+/* ARM button */
+.arm-row {
+    display: flex;
+    justify-content: center;
+    margin-bottom: 8px;
+}
+
+.ctrl-btn.arm {
+    width: 100%;
+    border-color: #333;
+    color: #666;
+    font-size: 1.1em;
+    padding: 14px 8px;
+    letter-spacing: 0.1em;
+}
+
+.ctrl-btn.arm:hover { background: #2a2a2a; }
+.ctrl-btn.arm:active { background: #333; }
+
+.ctrl-btn.arm.armed {
+    background: #1a3a1a;
+    border-color: #2d6a3f;
+    color: #4ade80;
+}
+
+.ctrl-btn.arm.armed:hover { background: #1f4a22; }
+.ctrl-btn.arm.armed:active { background: #2d6a3f; }
 
 /* Distance input */
 .distance-row {

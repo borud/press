@@ -60,6 +60,7 @@ void app_main(void) {
       .enable_gpio = PIN_ENABLE,
       .resolution_hz = STEP_RESOLUTION_HZ,
       .pulse_ticks = STEP_PULSE_TICKS,
+      .invert_signals = false,
   };
   ret = stepper_init(&stepper_cfg);
   if (ret != ESP_OK) {
@@ -84,6 +85,10 @@ void app_main(void) {
   }
   esp_task_wdt_reset();
 
+  // Unsubscribe main task from TWDT — hardware init is complete,
+  // wifi_prov_init() may block for up to 60s waiting for connection
+  esp_task_wdt_delete(NULL);
+
   // Initialize WiFi with BLE provisioning
   ret = wifi_prov_init();
   if (ret != ESP_OK) {
@@ -91,14 +96,9 @@ void app_main(void) {
     // Continue without WiFi — motor control still works
   }
 
-  esp_task_wdt_reset();
-
   // Start web server when WiFi connects, stop on disconnect
   wifi_on_connected(on_wifi_connected);
   wifi_on_disconnected(on_wifi_disconnected);
 
   ESP_LOGI(TAG, "ready");
-
-  // Unsubscribe main task from TWDT — init is complete, app_main returns
-  esp_task_wdt_delete(NULL);
 }

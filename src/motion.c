@@ -1,6 +1,7 @@
 #include "motion.h"
 #include "config.h"
 #include "stepper.h"
+#include "webserver.h"
 
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -31,7 +32,7 @@ static struct {
 static void on_move_done(void)
 {
     s_motion.activity = ACTIVITY_IDLE;
-    stepper_disable();
+    webserver_broadcast_status();
     ESP_LOGI(TAG, "move complete");
 }
 
@@ -87,8 +88,26 @@ const char *motion_get_activity(void)
 
 esp_err_t motion_jog_start(button_state_t dir)
 {
+    // Wait for any ongoing deceleration to finish
+    int wait_ms = 0;
+    while (stepper_is_running() && wait_ms < 2000) {
+        vTaskDelay(pdMS_TO_TICKS(10));
+        wait_ms += 10;
+    }
+    if (stepper_is_running()) {
+        ESP_LOGW(TAG, "jog: stepper still running after 2s, forcing stop");
+        stepper_stop();
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+
     stepper_dir_t sdir = (dir == BTN_FWD) ? STEPPER_DIR_FORWARD : STEPPER_DIR_REVERSE;
     s_motion.activity = (dir == BTN_FWD) ? ACTIVITY_JOG_FWD : ACTIVITY_JOG_REV;
+
+    if (!stepper_is_enabled()) {
+        ESP_LOGW(TAG, "jog: stepper not armed");
+        s_motion.activity = ACTIVITY_IDLE;
+        return ESP_ERR_INVALID_STATE;
+    }
 
     esp_err_t ret = stepper_set_direction(sdir);
     if (ret != ESP_OK) {
@@ -97,27 +116,21 @@ esp_err_t motion_jog_start(button_state_t dir)
         return ret;
     }
 
-    ret = stepper_enable();
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "jog: failed to enable stepper: %s", esp_err_to_name(ret));
-        s_motion.activity = ACTIVITY_IDLE;
-        return ret;
-    }
-
     ret = stepper_run_continuous(config_get()->max_speed_hz);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "jog: failed to start: %s", esp_err_to_name(ret));
-        stepper_disable();
         s_motion.activity = ACTIVITY_IDLE;
         return ret;
     }
 
+    webserver_broadcast_status();
     return ESP_OK;
 }
 
 esp_err_t motion_jog_stop(void)
 {
     s_motion.activity = ACTIVITY_IDLE;
+    webserver_broadcast_status();
     return stepper_ramp_stop();
 }
 
@@ -135,6 +148,12 @@ esp_err_t motion_move_steps(int32_t steps)
     stepper_dir_t dir = (steps > 0) ? STEPPER_DIR_FORWARD : STEPPER_DIR_REVERSE;
     s_motion.activity = (steps > 0) ? ACTIVITY_MOVE_FWD : ACTIVITY_MOVE_REV;
 
+    if (!stepper_is_enabled()) {
+        ESP_LOGW(TAG, "move: stepper not armed");
+        s_motion.activity = ACTIVITY_IDLE;
+        return ESP_ERR_INVALID_STATE;
+    }
+
     esp_err_t ret = stepper_set_direction(dir);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "move: failed to set direction: %s", esp_err_to_name(ret));
@@ -142,21 +161,14 @@ esp_err_t motion_move_steps(int32_t steps)
         return ret;
     }
 
-    ret = stepper_enable();
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "move: failed to enable: %s", esp_err_to_name(ret));
-        s_motion.activity = ACTIVITY_IDLE;
-        return ret;
-    }
-
     ret = stepper_run_profiled((uint32_t)abs(steps));
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "move: failed to start: %s", esp_err_to_name(ret));
-        stepper_disable();
         s_motion.activity = ACTIVITY_IDLE;
         return ret;
     }
 
+    webserver_broadcast_status();
     ESP_LOGI(TAG, "moving %ld steps", (long)steps);
     return ESP_OK;
 }
@@ -173,12 +185,15 @@ esp_err_t motion_stop(void)
 {
     s_motion.activity = ACTIVITY_IDLE;
     esp_err_t ret = stepper_stop();
-    stepper_disable();
+    webserver_broadcast_status();
     return ret;
 }
 
 void motion_on_button_press(button_state_t btn)
 {
+    if (!stepper_is_enabled()) {
+        return;
+    }
     if (btn == BTN_FWD || btn == BTN_REV) {
         motion_jog_start(btn);
     }

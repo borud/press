@@ -22,6 +22,7 @@ typedef struct {
     int enable_gpio;
     uint32_t resolution_hz;  // RMT resolution (1 MHz recommended)
     uint32_t pulse_ticks;    // Pulse high duration in RMT ticks
+    bool     invert_signals; // Invert DIR and ENABLE for ULN2003
 } stepper_config_t;
 
 typedef struct {
@@ -92,6 +93,11 @@ esp_err_t stepper_stop(void);
  * Check if the stepper is currently running.
  */
 bool stepper_is_running(void);
+
+/**
+ * Check if the stepper driver is enabled (armed).
+ */
+bool stepper_is_enabled(void);
 
 /**
  * Get the current stepper state.

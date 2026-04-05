@@ -57,7 +57,6 @@ static esp_err_t stepper_uniform_reset(rmt_encoder_t *encoder)
     stepper_uniform_encoder_t *enc = __containerof(encoder, stepper_uniform_encoder_t, base);
     rmt_encoder_reset(enc->copy_encoder);
     enc->steps_encoded = 0;
-    enc->total_steps = 0;
     return ESP_OK;
 }
 

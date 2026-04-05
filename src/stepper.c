@@ -21,6 +21,7 @@ static struct {
   stepper_config_t         config;
   stepper_motion_params_t  motion_params;
   volatile stepper_state_t state;
+  volatile bool            enabled;
   volatile bool            stop_requested;
   volatile bool            profiled_move;  // true = fixed-step move with accel/decel
   volatile uint32_t        uniform_steps;  // steps for uniform phase in profiled move
@@ -102,8 +103,11 @@ static void handle_state_transition(void) {
       return;
 
     default:
-      // Handle profiled move completion
-      handle_profiled_move_completion();
+      if (s_stepper.profiled_move) {
+        handle_profiled_move_completion();
+        return;
+      }
+      ESP_LOGI(TAG, "deceleration complete, stepper stopped");
       return;
   }
 }
@@ -202,7 +206,7 @@ esp_err_t stepper_init(const stepper_config_t* config) {
   };
   ESP_RETURN_ON_ERROR(gpio_config(&dir_conf), TAG, "failed to configure DIR gpio %d", config->dir_gpio);
 
-  // Configure ENABLE pin (start disabled = HIGH)
+  // Configure ENABLE pin (start disabled)
   gpio_config_t en_conf = {
       .pin_bit_mask = (1ULL << config->enable_gpio),
       .mode         = GPIO_MODE_OUTPUT,
@@ -211,7 +215,8 @@ esp_err_t stepper_init(const stepper_config_t* config) {
       .intr_type    = GPIO_INTR_DISABLE,
   };
   ESP_RETURN_ON_ERROR(gpio_config(&en_conf), TAG, "failed to configure ENABLE gpio %d", config->enable_gpio);
-  gpio_set_level(config->enable_gpio, 1);  // Disabled (active LOW)
+  gpio_set_level(config->enable_gpio, config->invert_signals ? 0 : 1);  // Disabled (active LOW, inverted if ULN2003)
+  s_stepper.enabled = false;
 
   // Create RMT TX channel on STEP pin
   rmt_tx_channel_config_t rmt_config = {
@@ -245,11 +250,12 @@ esp_err_t stepper_init(const stepper_config_t* config) {
   ESP_RETURN_ON_FALSE(task_ret == pdPASS, ESP_ERR_NO_MEM, TAG, "failed to create stepper state task");
 
   ESP_LOGI(TAG,
-      "stepper initialized: STEP=%d DIR=%d EN=%d res=%luHz",
+      "stepper initialized: STEP=%d DIR=%d EN=%d res=%luHz invert=%s",
       config->step_gpio,
       config->dir_gpio,
       config->enable_gpio,
-      (unsigned long)config->resolution_hz);
+      (unsigned long)config->resolution_hz,
+      config->invert_signals ? "yes" : "no");
   ESP_LOGI(TAG,
       "motion params: start=%luHz max=%luHz accel_steps=%lu",
       (unsigned long)s_stepper.motion_params.start_speed_hz,
@@ -260,19 +266,24 @@ esp_err_t stepper_init(const stepper_config_t* config) {
 }
 
 esp_err_t stepper_enable(void) {
-  gpio_set_level(s_stepper.config.enable_gpio, 0);
+  gpio_set_level(s_stepper.config.enable_gpio, s_stepper.config.invert_signals ? 1 : 0);
+  s_stepper.enabled = true;
   ESP_LOGD(TAG, "stepper enabled");
   return ESP_OK;
 }
 
 esp_err_t stepper_disable(void) {
-  gpio_set_level(s_stepper.config.enable_gpio, 1);
+  gpio_set_level(s_stepper.config.enable_gpio, s_stepper.config.invert_signals ? 0 : 1);
+  s_stepper.enabled = false;
   ESP_LOGD(TAG, "stepper disabled");
   return ESP_OK;
 }
 
+bool stepper_is_enabled(void) { return s_stepper.enabled; }
+
 esp_err_t stepper_set_direction(stepper_dir_t dir) {
-  gpio_set_level(s_stepper.config.dir_gpio, (uint32_t)dir);
+  uint32_t level = (uint32_t)dir ^ (s_stepper.config.invert_signals ? 1 : 0);
+  gpio_set_level(s_stepper.config.dir_gpio, level);
   ESP_LOGD(TAG, "direction set to %s", dir == STEPPER_DIR_FORWARD ? "FWD" : "REV");
   return ESP_OK;
 }
@@ -409,8 +420,8 @@ esp_err_t stepper_run_continuous(uint32_t speed_hz) {
   ESP_RETURN_ON_FALSE(speed_hz > 0, ESP_ERR_INVALID_ARG, TAG, "speed must be > 0");
 
   if (s_stepper.state != STEPPER_STATE_IDLE) {
-    ESP_LOGW(TAG, "stepper not idle, stopping first");
-    stepper_stop();
+    ESP_LOGW(TAG, "stepper not idle, ignoring run_continuous");
+    return ESP_ERR_INVALID_STATE;
   }
 
   s_stepper.stop_requested = false;

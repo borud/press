@@ -9,6 +9,9 @@
 #include "esp_littlefs.h"
 #include "esp_log.h"
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -16,6 +19,41 @@
 static const char *TAG = "webserver";
 
 static httpd_handle_t s_server = NULL;
+
+// ============================================================================
+// SSE (Server-Sent Events) client tracking
+// ============================================================================
+
+#define SSE_MAX_CLIENTS 4
+
+typedef struct {
+    int          fd;
+    httpd_req_t *async_req;
+} sse_client_t;
+
+static sse_client_t s_sse_clients[SSE_MAX_CLIENTS];
+static int s_sse_count = 0;
+static SemaphoreHandle_t s_sse_mutex = NULL;
+
+// Send a properly chunked SSE event to one client.
+// Returns ESP_OK on success, ESP_FAIL on error.
+static esp_err_t sse_send_chunk(sse_client_t *client, const char *data, size_t len)
+{
+    // httpd_resp_send_chunk uses the async req's send function,
+    // which maintains chunked transfer encoding.
+    esp_err_t err = httpd_resp_send_chunk(client->async_req, data, len);
+    return err;
+}
+
+// Remove client at index i (caller must hold mutex)
+static void sse_remove_at(int i)
+{
+    ESP_LOGI(TAG, "SSE client removed (fd=%d, remaining=%d)",
+             s_sse_clients[i].fd, s_sse_count - 1);
+    httpd_req_async_handler_complete(s_sse_clients[i].async_req);
+    s_sse_clients[i] = s_sse_clients[s_sse_count - 1];
+    s_sse_count--;
+}
 
 // ============================================================================
 // Helpers
@@ -137,6 +175,8 @@ static esp_err_t api_status_handler(httpd_req_t *req)
 
     cJSON_AddStringToObject(json, "activity", motion_get_activity());
     cJSON_AddBoolToObject(json, "running", stepper_is_running());
+    cJSON_AddBoolToObject(json, "armed", stepper_is_enabled());
+    cJSON_AddBoolToObject(json, "armed", stepper_is_enabled());
 
     cJSON_AddNumberToObject(json, "max_speed_hz", cfg->max_speed_hz);
     cJSON_AddNumberToObject(json, "start_speed_hz", cfg->start_speed_hz);
@@ -231,20 +271,13 @@ static esp_err_t api_config_post_handler(httpd_req_t *req)
         changed = true;
     }
 
-    if (changed) {
-        esp_err_t save_ret = config_save(cfg);
-        if (save_ret != ESP_OK) {
-            ESP_LOGE(TAG, "failed to save config: %s", esp_err_to_name(save_ret));
-        }
-
-        if (!stepper_is_running()) {
-            stepper_motion_params_t params = {
-                .max_speed_hz = cfg->max_speed_hz,
-                .start_speed_hz = cfg->start_speed_hz,
-                .accel_steps = cfg->accel_steps,
-            };
-            stepper_set_motion_params(&params);
-        }
+    if (changed && !stepper_is_running()) {
+        stepper_motion_params_t params = {
+            .max_speed_hz = cfg->max_speed_hz,
+            .start_speed_hz = cfg->start_speed_hz,
+            .accel_steps = cfg->accel_steps,
+        };
+        stepper_set_motion_params(&params);
     }
 
     config_unlock();
@@ -297,6 +330,52 @@ static esp_err_t api_move_handler(httpd_req_t *req)
     return send_ret;
 }
 
+static esp_err_t api_config_save_handler(httpd_req_t *req)
+{
+    const press_config_t *cfg = config_get();
+    esp_err_t save_ret = config_save(cfg);
+
+    cJSON *resp = cJSON_CreateObject();
+    cJSON_AddStringToObject(resp, "status", save_ret == ESP_OK ? "ok" : "error");
+    esp_err_t ret = send_json_response(req, resp);
+    cJSON_Delete(resp);
+    return ret;
+}
+
+static esp_err_t api_arm_handler(httpd_req_t *req)
+{
+    cJSON *json = parse_json_body(req);
+    if (!json) {
+        return send_error(req, 400, "invalid JSON body");
+    }
+
+    cJSON *armed = cJSON_GetObjectItem(json, "armed");
+    if (!armed || !cJSON_IsBool(armed)) {
+        cJSON_Delete(json);
+        return send_error(req, 400, "missing 'armed' boolean field");
+    }
+
+    esp_err_t ret;
+    if (cJSON_IsTrue(armed)) {
+        ret = stepper_enable();
+    } else {
+        if (stepper_is_running()) {
+            stepper_stop();
+        }
+        ret = stepper_disable();
+    }
+    cJSON_Delete(json);
+
+    webserver_broadcast_status();
+
+    cJSON *resp = cJSON_CreateObject();
+    cJSON_AddStringToObject(resp, "status", ret == ESP_OK ? "ok" : "error");
+    cJSON_AddBoolToObject(resp, "armed", stepper_is_enabled());
+    esp_err_t send_ret = send_json_response(req, resp);
+    cJSON_Delete(resp);
+    return send_ret;
+}
+
 static esp_err_t api_firmware_handler(httpd_req_t *req)
 {
     cJSON *json = cJSON_CreateObject();
@@ -305,6 +384,111 @@ static esp_err_t api_firmware_handler(httpd_req_t *req)
     esp_err_t ret = send_json_response(req, json);
     cJSON_Delete(json);
     return ret;
+}
+
+// ============================================================================
+// SSE endpoint & broadcast
+// ============================================================================
+
+static esp_err_t api_events_handler(httpd_req_t *req)
+{
+    int fd = httpd_req_to_sockfd(req);
+
+    // Check capacity before doing anything
+    xSemaphoreTake(s_sse_mutex, portMAX_DELAY);
+    if (s_sse_count >= SSE_MAX_CLIENTS) {
+        xSemaphoreGive(s_sse_mutex);
+        ESP_LOGW(TAG, "SSE client rejected, max %d reached", SSE_MAX_CLIENTS);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "too many SSE clients");
+        return ESP_FAIL;
+    }
+    xSemaphoreGive(s_sse_mutex);
+
+    // Set SSE headers and send initial chunk (triggers chunked encoding)
+    httpd_resp_set_type(req, "text/event-stream");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
+    httpd_resp_set_hdr(req, "Connection", "keep-alive");
+    httpd_resp_send_chunk(req, ": connected\n\n", HTTPD_RESP_USE_STRLEN);
+
+    // Take async ownership — httpd will stop trying to read from this socket
+    httpd_req_t *async_req = NULL;
+    esp_err_t err = httpd_req_async_handler_begin(req, &async_req);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "SSE async handler begin failed: %s", esp_err_to_name(err));
+        return ESP_FAIL;
+    }
+
+    // Register the client
+    xSemaphoreTake(s_sse_mutex, portMAX_DELAY);
+    s_sse_clients[s_sse_count].fd = fd;
+    s_sse_clients[s_sse_count].async_req = async_req;
+    s_sse_count++;
+    ESP_LOGI(TAG, "SSE client connected (fd=%d, total=%d)", fd, s_sse_count);
+
+    // Send initial status via the async req (maintains chunked encoding)
+    cJSON *json = cJSON_CreateObject();
+    cJSON_AddStringToObject(json, "activity", motion_get_activity());
+    cJSON_AddBoolToObject(json, "running", stepper_is_running());
+    cJSON_AddBoolToObject(json, "armed", stepper_is_enabled());
+    char *str = cJSON_PrintUnformatted(json);
+    cJSON_Delete(json);
+
+    if (str) {
+        char buf[256];
+        int len = snprintf(buf, sizeof(buf), "data: %s\n\n", str);
+        cJSON_free(str);
+        if (len > 0 && len < (int)sizeof(buf)) {
+            sse_send_chunk(&s_sse_clients[s_sse_count - 1], buf, len);
+        }
+    }
+
+    xSemaphoreGive(s_sse_mutex);
+    return ESP_OK;
+}
+
+void webserver_broadcast_status(void)
+{
+    if (!s_server || !s_sse_mutex) {
+        return;
+    }
+
+    xSemaphoreTake(s_sse_mutex, portMAX_DELAY);
+
+    if (s_sse_count == 0) {
+        xSemaphoreGive(s_sse_mutex);
+        return;
+    }
+
+    cJSON *json = cJSON_CreateObject();
+    cJSON_AddStringToObject(json, "activity", motion_get_activity());
+    cJSON_AddBoolToObject(json, "running", stepper_is_running());
+    cJSON_AddBoolToObject(json, "armed", stepper_is_enabled());
+    char *str = cJSON_PrintUnformatted(json);
+    cJSON_Delete(json);
+
+    if (!str) {
+        xSemaphoreGive(s_sse_mutex);
+        return;
+    }
+
+    char buf[256];
+    int len = snprintf(buf, sizeof(buf), "data: %s\n\n", str);
+    cJSON_free(str);
+
+    if (len <= 0 || len >= (int)sizeof(buf)) {
+        xSemaphoreGive(s_sse_mutex);
+        return;
+    }
+
+    for (int i = s_sse_count - 1; i >= 0; i--) {
+        esp_err_t ret = sse_send_chunk(&s_sse_clients[i], buf, len);
+        if (ret != ESP_OK) {
+            ESP_LOGW(TAG, "SSE send failed (fd=%d), removing client", s_sse_clients[i].fd);
+            sse_remove_at(i);
+        }
+    }
+
+    xSemaphoreGive(s_sse_mutex);
 }
 
 // ============================================================================
@@ -343,9 +527,15 @@ esp_err_t webserver_init(void)
         ESP_LOGW(TAG, "LittleFS mount failed, static files won't be served");
     }
 
+    if (!s_sse_mutex) {
+        s_sse_mutex = xSemaphoreCreateMutex();
+    }
+    s_sse_count = 0;
+
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.max_uri_handlers = 16;
     config.uri_match_fn = httpd_uri_match_wildcard;
+    config.lru_purge_enable = true;
 
     ret = httpd_start(&s_server, &config);
     if (ret != ESP_OK) {
@@ -354,10 +544,13 @@ esp_err_t webserver_init(void)
     }
 
     httpd_uri_t routes[] = {
+        { .uri = "/api/events",      .method = HTTP_GET,  .handler = api_events_handler },
         { .uri = "/api/status",      .method = HTTP_GET,  .handler = api_status_handler },
         { .uri = "/api/config",      .method = HTTP_GET,  .handler = api_config_get_handler },
         { .uri = "/api/config",      .method = HTTP_POST, .handler = api_config_post_handler },
+        { .uri = "/api/config/save", .method = HTTP_POST, .handler = api_config_save_handler },
         { .uri = "/api/move",        .method = HTTP_POST, .handler = api_move_handler },
+        { .uri = "/api/arm",         .method = HTTP_POST, .handler = api_arm_handler },
         { .uri = "/api/firmware",    .method = HTTP_GET,  .handler = api_firmware_handler },
         { .uri = "/",                .method = HTTP_GET,  .handler = root_get_handler },
         { .uri = "/*",               .method = HTTP_GET,  .handler = static_get_handler },

@@ -4,5 +4,6 @@
     "--background-index",
     "--compile-commands-dir=${workspaceFolder}",
     "--query-driver=${workspaceFolder}/.platformio/packages/toolchain-xtensa-esp-elf/bin/xtensa-esp32-elf-gcc"
-  ]
+  ],
+  "idf.currentSetup": "/Users/borud/esp/v5.5.1/esp-idf"
 }

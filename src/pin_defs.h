@@ -8,8 +8,11 @@
 //   GPIO 19     ->  pin 3          ->  pin 14           ->  DIR-
 //   GPIO 21     ->  pin 1          ->  pin 16           ->  EN-
 //
-// Because the ULN2003 inverts, set stepper_config_t.invert_signals = false
-// (the driver's active-LOW inputs cancel with the ULN2003 inversion).
+// The ULN2003 introduces a single inversion between the ESP32 GPIO and the
+// driver input, so set stepper_config_t.invert_signals = true. This makes
+// stepper_enable() drive the GPIO HIGH, which the ULN2003 pulls LOW at the
+// driver's active-LOW EN- input (asserted = enabled). The same applies to
+// DIR-. Without this flag the polarity of ENABLE and DIR is inverted.
 #define PIN_STEP        18  // RMT TX channel -> ULN2003 -> PUL-
 #define PIN_DIR         19  // Direction       -> ULN2003 -> DIR-
 #define PIN_ENABLE      21  // Enable          -> ULN2003 -> EN-

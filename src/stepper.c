@@ -204,7 +204,7 @@ esp_err_t stepper_init(const stepper_config_t* config) {
   };
   ESP_RETURN_ON_ERROR(gpio_config(&dir_conf), TAG, "failed to configure DIR gpio %d", config->dir_gpio);
 
-  // Configure ENABLE pin (start disabled)
+  // Configure ENABLE pin (start enabled)
   gpio_config_t en_conf = {
       .pin_bit_mask = (1ULL << config->enable_gpio),
       .mode         = GPIO_MODE_OUTPUT,
@@ -213,8 +213,8 @@ esp_err_t stepper_init(const stepper_config_t* config) {
       .intr_type    = GPIO_INTR_DISABLE,
   };
   ESP_RETURN_ON_ERROR(gpio_config(&en_conf), TAG, "failed to configure ENABLE gpio %d", config->enable_gpio);
-  gpio_set_level(config->enable_gpio, config->invert_signals ? 0 : 1);  // Disabled (active LOW, inverted if ULN2003)
-  s_stepper.enabled = false;
+  gpio_set_level(config->enable_gpio, config->invert_signals ? 1 : 0);  // Disabled (active LOW, inverted if ULN2003)
+  s_stepper.enabled = true;
 
   // Create RMT TX channel on STEP pin
   rmt_tx_channel_config_t rmt_config = {
@@ -345,7 +345,7 @@ esp_err_t stepper_run_steps(uint32_t steps) {
   uint32_t              dummy     = 0;
 
   s_stepper.state = STEPPER_STATE_RUNNING;
-  esp_err_t ret = rmt_transmit(s_stepper.rmt_channel, s_stepper.uniform_encoder, &dummy, sizeof(dummy), &tx_config);
+  esp_err_t ret   = rmt_transmit(s_stepper.rmt_channel, s_stepper.uniform_encoder, &dummy, sizeof(dummy), &tx_config);
   if (ret != ESP_OK) {
     s_stepper.state = STEPPER_STATE_IDLE;
     ESP_LOGE(TAG, "failed to start RMT transmission: %s", esp_err_to_name(ret));
@@ -353,7 +353,8 @@ esp_err_t stepper_run_steps(uint32_t steps) {
     return ret;
   }
 
-  ESP_LOGI(TAG, "running %lu steps at %luHz", (unsigned long)steps, (unsigned long)s_stepper.motion_params.max_speed_hz);
+  ESP_LOGI(
+      TAG, "running %lu steps at %luHz", (unsigned long)steps, (unsigned long)s_stepper.motion_params.max_speed_hz);
   xSemaphoreGive(s_stepper.api_mutex);
   return ESP_OK;
 }
@@ -425,7 +426,7 @@ esp_err_t stepper_run_profiled(uint32_t steps) {
   uint32_t              dummy     = 0;
 
   s_stepper.state = STEPPER_STATE_ACCELERATING;
-  esp_err_t ret = rmt_transmit(s_stepper.rmt_channel, s_stepper.accel_encoder, &dummy, sizeof(dummy), &tx_config);
+  esp_err_t ret   = rmt_transmit(s_stepper.rmt_channel, s_stepper.accel_encoder, &dummy, sizeof(dummy), &tx_config);
   if (ret != ESP_OK) {
     s_stepper.state = STEPPER_STATE_IDLE;
     ESP_LOGE(TAG, "failed to start profiled move: %s", esp_err_to_name(ret));
@@ -461,7 +462,7 @@ esp_err_t stepper_run_continuous(void) {
   uint32_t              dummy     = 0;
 
   s_stepper.state = STEPPER_STATE_ACCELERATING;
-  esp_err_t ret = rmt_transmit(s_stepper.rmt_channel, s_stepper.accel_encoder, &dummy, sizeof(dummy), &tx_config);
+  esp_err_t ret   = rmt_transmit(s_stepper.rmt_channel, s_stepper.accel_encoder, &dummy, sizeof(dummy), &tx_config);
   if (ret != ESP_OK) {
     s_stepper.state = STEPPER_STATE_IDLE;
     ESP_LOGE(TAG, "failed to start acceleration: %s", esp_err_to_name(ret));
